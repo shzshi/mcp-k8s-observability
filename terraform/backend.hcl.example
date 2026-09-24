@@ -1,0 +1,10 @@
+# Copy to backend.hcl and fill in real values, or pass these same keys
+# via -backend-config flags. Never commit backend.hcl with real values
+# (it's already in .gitignore) — bucket/table names aren't secret, but
+# keeping this as a template avoids drift between local and CI config.
+
+bucket         = "REPLACE-with-your-tf-state-bucket-name"
+key            = "mcp-observability-demo/terraform.tfstate"
+region         = "eu-west-2"
+dynamodb_table = "REPLACE-with-your-tf-lock-table-name"
+encrypt        = true
