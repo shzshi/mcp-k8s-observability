@@ -20,13 +20,37 @@ env:
   EKS_CLUSTER_NAME: mcp-observability-demo-cluster
 
 jobs:
-  # --- Infra: plan on every PR touching terraform/, apply only on main ---
+  # Detect which paths changed so app-only pushes skip terraform (and its AWS auth).
+  changes:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      terraform: ${{ steps.filter.outputs.terraform }}
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            terraform:
+              - 'terraform/**'
+            app:
+              - 'server/**'
+              - 'helm/**'
+              - '.github/workflows/deploy.yml'
+
+  # --- Infra: plan on every PR touching terraform/, apply only on main when terraform/ changed ---
   terraform-plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
+      id-token: write # required for GitHub OIDC → AWS role assumption
     defaults:
       run:
         working-directory: terraform
@@ -76,11 +100,17 @@ jobs:
         run: exit 1
 
   terraform-apply:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Plan stays PR-only; apply runs on main only when terraform/ actually changed.
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.changes.outputs.terraform == 'true'
+    needs: changes
     runs-on: ubuntu-latest
     environment: production # manual approval gate — infra changes shouldn't auto-apply unreviewed
     permissions:
       contents: read
+      id-token: write # required for GitHub OIDC → AWS role assumption
     defaults:
       run:
         working-directory: terraform
@@ -102,9 +132,9 @@ jobs:
         run: |
           terraform init \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="dynamodb_table=${{ vars.TF_LOCK_TABLE }}" \
             -backend-config="region=${{ env.AWS_REGION }}" \
-            -backend-config="key=mcp-observability-demo/terraform.tfstate"
+            -backend-config="key=mcp-observability-demo/terraform.tfstate" \
+            -backend-config="use_lockfile=true"
 
       - name: Terraform Apply
         run: terraform apply -auto-approve -input=false
@@ -115,6 +145,11 @@ jobs:
 
   # --- App: build image with uv-based Dockerfile, push to GHCR ---
   build-and-push:
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.changes.outputs.app == 'true'
+    needs: changes
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -146,9 +181,19 @@ jobs:
 
   # --- Release: deploy the app onto whatever terraform-apply provisioned ---
   deploy:
-    needs: [terraform-apply, build-and-push]
+    # App deploy no longer hard-requires a terraform apply in the same run.
+    # If apply ran (infra changed), wait for it; if it was skipped, deploy alone.
+    if: >
+      always() &&
+      !cancelled() &&
+      needs.build-and-push.result == 'success' &&
+      (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped')
+    needs: [changes, terraform-apply, build-and-push]
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      id-token: write # required for GitHub OIDC → AWS role assumption
     steps:
       - uses: actions/checkout@v4
 
@@ -159,7 +204,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name ${{ needs.terraform-apply.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
