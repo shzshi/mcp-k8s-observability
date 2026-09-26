@@ -88,7 +88,7 @@ module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 20.0"
 
-  cluster_name    = "${var.project_name}-cluster"
+  cluster_name    = var.project_name
   cluster_version = var.kubernetes_version
 
   vpc_id     = module.vpc.vpc_id
@@ -102,7 +102,7 @@ module "eks" {
       max_size       = 3
       desired_size   = 1 # small + cheap for a personal proof project; bump for real load testing
       instance_types = [var.node_instance_type]
-      capacity_type  = "SPOT" # meaningful cost saving for non-production workloads
+      capacity_type  = "ON_DEMAND" # meaningful cost saving for non-production workloads
     }
   }
 

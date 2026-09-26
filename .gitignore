@@ -10,3 +10,4 @@ __pycache__/
 .venv/
 # NOTE: uv.lock is intentionally NOT ignored — it should be committed
 # for reproducible builds, same principle as package-lock.json
+

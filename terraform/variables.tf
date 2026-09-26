@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Name prefix for all resources"
   type        = string
-  default     = "mcp-observability-demo"
+  default     = "mcp-obs-demo"
 }
 
 variable "environment" {
@@ -19,13 +19,13 @@ variable "environment" {
 variable "kubernetes_version" {
   description = "EKS Kubernetes version"
   type        = string
-  default     = "1.30"
+  default     = "1.36"
 }
 
 variable "node_instance_type" {
   description = "EC2 instance type for the EKS managed node group"
   type        = string
-  default     = "t3.medium" # cheapest reasonable size for running a couple of small pods
+  default     = "t3.small" # cheapest reasonable size for running a couple of small pods
 }
 
 variable "eso_namespace" {

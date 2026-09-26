@@ -155,14 +155,16 @@ uv run python3 mcp_server.py
 
 ## Deploying
 
-**One-time setup** — Terraform's remote state needs an S3 bucket + DynamoDB
-lock table to exist *before* `terraform init` can use them as a backend
-(Terraform can't create the backend it's about to store its state in):
+**One-time setup** — Terraform's remote state needs an S3 bucket to exist
+*before* `terraform init` can use it as a backend (Terraform can't create
+the backend it's about to store its own state in). No DynamoDB table is
+needed: Terraform 1.10+ supports native S3 state locking (`use_lockfile`),
+which replaced the older DynamoDB-based approach.
 
 ```bash
 cd terraform
-./bootstrap-backend.sh my-tf-state-bucket my-tf-lock-table eu-west-2
-cp backend.hcl.example backend.hcl   # fill in the names from the step above
+./bootstrap-backend.sh my-tf-state-bucket eu-west-2
+cp backend.hcl.example backend.hcl   # fill in the bucket name from the step above
 ```
 
 **Provision infra:**
@@ -196,7 +198,7 @@ gets a `terraform plan` posted as a PR comment for review; merging to
 `main` runs `terraform apply`, then builds and pushes the image, then
 deploys via Helm — in that order, so the app never tries to deploy onto
 infra that doesn't exist yet. Set these once as repo variables/secrets:
-`vars.TF_STATE_BUCKET`, `vars.TF_LOCK_TABLE`, `secrets.AWS_DEPLOY_ROLE_ARN`.
+`vars.TF_STATE_BUCKET`, `secrets.AWS_DEPLOY_ROLE_ARN`.
 
 ---
 
