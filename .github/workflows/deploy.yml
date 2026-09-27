@@ -1,5 +1,8 @@
 name: Provision, Build and Deploy MCP Server
 
+# Linear pipeline on main / manual dispatch:
+#   terraform plan → terraform apply → build & push (ECR) → deploy (EKS)
+# PRs that touch terraform/ still get a plan-only review comment (no apply).
 on:
   push:
     branches: [main]
@@ -15,45 +18,24 @@ on:
   workflow_dispatch: {}
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/github-mcp-server
   AWS_REGION: eu-west-2
-  EKS_CLUSTER_NAME: mcp-observability-demo-cluster
+  TF_WORKING_DIR: terraform
 
 jobs:
-  # Detect which paths changed so app-only pushes skip terraform (and its AWS auth).
-  changes:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      terraform: ${{ steps.filter.outputs.terraform }}
-      app: ${{ steps.filter.outputs.app }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            terraform:
-              - 'terraform/**'
-            app:
-              - 'server/**'
-              - 'helm/**'
-              - '.github/workflows/deploy.yml'
-
-  # --- Infra: plan on every PR touching terraform/, apply only on main when terraform/ changed ---
+  # -------------------------------------------------------------------------
+  # 1. Terraform Plan
+  # -------------------------------------------------------------------------
   terraform-plan:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-      id-token: write # required for GitHub OIDC → AWS role assumption
+      id-token: write
     defaults:
       run:
-        working-directory: terraform
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,6 +47,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.5"
+          terraform_wrapper: false # needed so plan file / exit codes behave normally
 
       - name: Terraform Init
         run: |
@@ -76,46 +59,61 @@ jobs:
 
       - name: Terraform Plan
         id: plan
-        run: terraform plan -no-color -input=false
-        continue-on-error: true
+        run: |
+          set +e
+          terraform plan -no-color -input=false -out=tfplan -detailed-exitcode
+          exitcode=$?
+          echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+          terraform show -no-color tfplan > plan.txt
+          # 0 = no changes, 1 = error, 2 = changes present — only 1 is a failure
+          if [ "$exitcode" -eq 1 ]; then
+            exit 1
+          fi
+          exit 0
 
-      # Surfaces the plan directly on the PR so infra changes get reviewed
-      # before merge, same as a code review — this is the habit that
-      # separates "I can run terraform apply" from "I understand change
-      # management," which is exactly what a client cares about.
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: |
+            ${{ env.TF_WORKING_DIR }}/tfplan
+            ${{ env.TF_WORKING_DIR }}/plan.txt
+          retention-days: 5
+
       - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
-            const output = `#### Terraform Plan\n\`\`\`\n${{ steps.plan.outputs.stdout }}\n\`\`\``;
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/plan.txt', 'utf8');
+            const body = `#### Terraform Plan\n\`\`\`\n${plan}\n\`\`\``;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: output,
+              body,
             });
 
-      - name: Fail if plan errored
-        if: steps.plan.outcome == 'failure'
-        run: exit 1
-
+  # -------------------------------------------------------------------------
+  # 2. Terraform Apply  (main / workflow_dispatch only; applies the saved plan)
+  # -------------------------------------------------------------------------
   terraform-apply:
-    # Plan stays PR-only; apply runs on main only when terraform/ actually changed.
     if: >
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      needs.changes.outputs.terraform == 'true'
-    needs: changes
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: terraform-plan
     runs-on: ubuntu-latest
-    environment: production # manual approval gate — infra changes shouldn't auto-apply unreviewed
+    environment: production
     permissions:
       contents: read
-      id-token: write # required for GitHub OIDC → AWS role assumption
+      id-token: write
     defaults:
       run:
-        working-directory: terraform
+        working-directory: ${{ env.TF_WORKING_DIR }}
     outputs:
-      cluster_name: ${{ steps.cluster.outputs.name }}
+      cluster_name: ${{ steps.outs.outputs.cluster_name }}
+      ecr_repository_url: ${{ steps.outs.outputs.ecr_repository_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -127,6 +125,13 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.5"
+          terraform_wrapper: false
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Init
         run: |
@@ -137,38 +142,53 @@ jobs:
             -backend-config="use_lockfile=true"
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve -input=false
+        # Skip apply when plan reported no changes (exitcode 0)
+        if: needs.terraform-plan.outputs.plan_exitcode == '2' || needs.terraform-plan.outputs.plan_exitcode == '0'
+        run: |
+          if [ "${{ needs.terraform-plan.outputs.plan_exitcode }}" = "2" ]; then
+            terraform apply -auto-approve -input=false tfplan
+          else
+            echo "No infrastructure changes; skipping apply."
+          fi
 
-      - name: Expose cluster name
-        id: cluster
-        run: echo "name=${{ env.EKS_CLUSTER_NAME }}" >> "$GITHUB_OUTPUT"
+      - name: Export Terraform outputs
+        id: outs
+        run: |
+          echo "cluster_name=$(terraform output -raw cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
 
-  # --- App: build image with uv-based Dockerfile, push to GHCR ---
+  # -------------------------------------------------------------------------
+  # 3. Build & push image to ECR
+  # -------------------------------------------------------------------------
   build-and-push:
-    if: >
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      needs.changes.outputs.app == 'true'
-    needs: changes
+    needs: terraform-apply
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
+      image_uri: ${{ steps.meta.outputs.image_uri }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Set image tag
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image metadata
         id: meta
-        run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+        run: |
+          TAG="${GITHUB_SHA::8}"
+          IMAGE_URI="${{ needs.terraform-apply.outputs.ecr_repository_url }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         uses: docker/build-push-action@v5
@@ -176,24 +196,19 @@ jobs:
           context: ./server
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
-            ${{ env.IMAGE_NAME }}:latest
+            ${{ steps.meta.outputs.image_uri }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image_uri }}:latest
 
-  # --- Release: deploy the app onto whatever terraform-apply provisioned ---
+  # -------------------------------------------------------------------------
+  # 4. Deploy to EKS via Helm
+  # -------------------------------------------------------------------------
   deploy:
-    # App deploy no longer hard-requires a terraform apply in the same run.
-    # If apply ran (infra changed), wait for it; if it was skipped, deploy alone.
-    if: >
-      always() &&
-      !cancelled() &&
-      needs.build-and-push.result == 'success' &&
-      (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped')
-    needs: [changes, terraform-apply, build-and-push]
+    needs: [terraform-apply, build-and-push]
     runs-on: ubuntu-latest
     environment: production
     permissions:
       contents: read
-      id-token: write # required for GitHub OIDC → AWS role assumption
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -204,7 +219,10 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ needs.terraform-apply.outputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }}
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
@@ -214,6 +232,7 @@ jobs:
       - name: Deploy via Helm
         run: |
           helm upgrade --install github-mcp-server ./helm/mcp-server \
+            --set image.repository=${{ needs.build-and-push.outputs.image_uri }} \
             --set image.tag=${{ needs.build-and-push.outputs.image_tag }} \
             --wait --timeout 3m
 

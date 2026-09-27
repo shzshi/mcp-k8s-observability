@@ -1,7 +1,8 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/YOUR_GITHUB_USERNAME/github-mcp-server
+  # Overridden by CI to the ECR URL from `terraform output -raw ecr_repository_url`
+  repository: ACCOUNT_ID.dkr.ecr.eu-west-2.amazonaws.com/mcp-obs-demo/github-mcp-server
   tag: latest
   pullPolicy: IfNotPresent
 
