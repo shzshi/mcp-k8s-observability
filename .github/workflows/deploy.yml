@@ -49,7 +49,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.7.5"
+          terraform_version: "1.10.5"
           terraform_wrapper: false # needed so plan file / exit codes behave normally
 
       - name: Terraform Init
@@ -127,7 +127,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.7.5"
+          terraform_version: "1.10.5"
           terraform_wrapper: false
 
       - name: Download plan artifact

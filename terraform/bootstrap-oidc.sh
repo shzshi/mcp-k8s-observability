@@ -15,6 +15,25 @@ GITHUB_REPO="${2:?Usage: $0 <github-owner> <github-repo> [project-name]}"
 PROJECT_NAME="${3:-mcp-obs-demo}"
 ROLE_NAME="${PROJECT_NAME}-github-actions-deploy"
 
+ # GitHub changed the default OIDC `sub` claim format on 2026-07-15: new
+# repos now embed immutable numeric owner/repo IDs instead of names
+# (e.g. repo:owner@123/repo@456:... instead of repo:owner/repo:...),
+# to stop attacks that recycle a deleted org/repo name. Rather than
+# hardcode that cutoff date here, we ask GitHub directly what format
+# THIS repo actually uses — this stays correct even if GitHub's rules
+# change again later.
+echo "Looking up this repo's actual OIDC subject claim format..."
+SUB_PREFIX=$(gh api "repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/oidc/customization/sub" \
+     --jq '.sub_claim_prefix' 2>/dev/null || echo "")
+
+ if [ -z "$SUB_PREFIX" ] || [ "$SUB_PREFIX" = "null" ]; then
+     echo "Could not fetch sub_claim_prefix via API — falling back to classic name-based format."
+     echo "(Needs 'gh auth login' with repo access, or GitHub Enterprise Server, which doesn't have this endpoint.)"
+     SUB_PREFIX="repo:${GITHUB_OWNER}/${GITHUB_REPO}"
+ else
+     echo "Using subject prefix: ${SUB_PREFIX}"
+ fi
+
 # GitHub's OIDC thumbprint — stable, documented value; skip creation if
 # a provider for this URL already exists (re-running this script should
 # be safe/idempotent).
@@ -47,9 +66,10 @@ TRUST_POLICY=$(cat <<JSON
       },
       "StringLike": {
         "token.actions.githubusercontent.com:sub": [
-          "repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/main",
-          "repo:${GITHUB_OWNER}/${GITHUB_REPO}:pull_request",
-          "repo:${GITHUB_OWNER}/${GITHUB_REPO}:environment:production"
+            "${SUB_PREFIX}:ref:refs/heads/main",
+            "${SUB_PREFIX}:pull_request",
+            "${SUB_PREFIX}:environment:production",
+            "${SUB_PREFIX}:environment:development"
         ]
       }
     }
