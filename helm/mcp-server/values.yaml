@@ -35,7 +35,7 @@ aws:
 
 externalSecrets:
   refreshInterval: 5m # how often ESO re-checks Secrets Manager for changes
-  secretsManagerSecretName: mcp-observability-demo/mcp-server-secrets # must match terraform's aws_secretsmanager_secret name
+  secretsManagerSecretName: mcp-obs-demo/mcp-server-secrets # must match terraform's aws_secretsmanager_secret name
 
 env:
   LOG_LEVEL: INFO

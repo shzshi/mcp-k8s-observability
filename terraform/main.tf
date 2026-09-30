@@ -106,8 +106,33 @@ module "eks" {
     }
   }
 
-  # Lets kubectl/helm authenticate via the AWS CLI identity that ran terraform apply
-  enable_cluster_creator_admin_permissions = true
+  # Explicit access entries instead of relying on "whoever ran apply" —
+  # since this cluster gets destroyed/recreated regularly and apply
+  # sometimes runs locally, sometimes via the CI pipeline's OIDC role,
+  # an implicit creator-only grant would silently lock out whichever
+  # identity DIDN'T run that particular apply.
+  enable_cluster_creator_admin_permissions = false
+
+  access_entries = {
+     local_admin = {
+       principal_arn = var.local_admin_iam_arn
+       policy_associations = {
+         admin = {
+           policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+           access_scope = { type = "cluster" }
+         }
+       }
+     }
+     ci_deploy_role = {
+       principal_arn = aws_iam_role.github_actions_deploy_lookup.arn
+       policy_associations = {
+         admin = {
+           policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+           access_scope = { type = "cluster" }
+         }
+       }
+     }
+   }
 
   tags = local.tags
 }
