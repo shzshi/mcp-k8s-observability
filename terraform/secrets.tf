@@ -11,6 +11,13 @@ resource "aws_secretsmanager_secret" "mcp_server" {
   name        = "${var.project_name}/mcp-server-secrets"
   description = "Langfuse + GitHub credentials for the github-mcp-server pod"
 
+  # This project gets destroyed and recreated every session to save
+  # cost (see README teardown instructions) — the default 30-day
+  # recovery window would otherwise block recreating a secret with
+  # the same name on every subsequent `terraform apply`. Force
+  # immediate deletion instead of the soft-delete/recovery window.
+  recovery_window_in_days = 0
+
   tags = local.tags
 }
 
