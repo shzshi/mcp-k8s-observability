@@ -60,7 +60,8 @@ class LangfuseTracingMiddleware(Middleware):
 
         span = None
         if self.langfuse:
-            span = self.langfuse.start_span(
+            span = self.langfuse.start_observation(
+                as_type="span",
                 name=f"tool:{tool_name}",
                 input=arguments,
                 metadata={"transport": "streamable_http"},
