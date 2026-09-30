@@ -39,3 +39,8 @@ variable "eso_service_account_name" {
   type        = string
   default     = "external-secrets-sa"
 }
+
+variable "local_admin_iam_arn" {
+  description = "Your local IAM user/role ARN — granted cluster-admin access explicitly, independent of who ran terraform apply"
+  type        = string
+}

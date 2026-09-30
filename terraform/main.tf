@@ -59,6 +59,10 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_iam_role" "github_actions_deploy_lookup" {
+  name = "${var.project_name}-github-actions-deploy"
+}
+
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.0"
